@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Karaoke Requests</title>
+<style>
+  :root { --bg:#15202b; --card:#1f2d3a; --line:#2e4152; --text:#eef2f5; --dim:#93a4b3;
+          --go:#2e7d4f; --go2:#3a9a63; --warn:#b9772b; --bad:#a63d3d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:17px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding:14px 16px 10px; border-bottom:1px solid var(--line); }
+  h1 { margin:0; font-size:21px; }
+  #status { font-size:14px; color:var(--dim); margin-top:2px; }
+  #status.on::before  { content:"● "; color:#4cd07d; }
+  #status.off::before { content:"● "; color:#d05a4c; }
+  main { padding:12px 16px 40px; max-width:560px; margin:0 auto; }
+  label { display:block; font-size:14px; color:var(--dim); margin:12px 0 4px; }
+  input { width:100%; padding:12px; font-size:18px; border-radius:8px;
+          border:1px solid var(--line); background:var(--card); color:var(--text); }
+  input:focus { outline:2px solid var(--go2); }
+  button { font-size:17px; border:0; border-radius:8px; padding:12px 16px;
+           background:var(--go); color:#fff; }
+  button:disabled { opacity:.45; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .row input { flex:1; }
+  #nameShow { font-weight:600; }
+  #changeName { background:transparent; color:var(--dim); padding:4px 8px;
+                font-size:14px; text-decoration:underline; }
+  ul { list-style:none; margin:8px 0 0; padding:0; }
+  #results li { padding:11px 12px; border-bottom:1px solid var(--line); cursor:pointer; }
+  #results li:active { background:var(--card); }
+  .t { font-weight:600; }
+  .a { color:var(--dim); font-size:15px; }
+  #msg { margin:12px 0 0; padding:10px 12px; border-radius:8px; display:none; }
+  #msg.ok  { display:block; background:#1d4a31; }
+  #msg.bad { display:block; background:#4a1d1d; }
+  #msg.wait{ display:block; background:#3b3420; }
+  h2 { font-size:17px; margin:24px 0 4px; color:var(--dim); font-weight:600; }
+  #lineup li { padding:7px 0; border-bottom:1px solid var(--line); display:flex; gap:10px; }
+  #lineup .n { color:var(--dim); width:1.8em; text-align:right; flex:none; }
+  #lineup li.mine { color:#7fe0a6; }
+  .hint { color:var(--dim); font-size:14px; }
+  #sheet { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none;
+           align-items:flex-end; justify-content:center; }
+  #sheet .box { background:var(--card); width:100%; max-width:560px;
+                border-radius:14px 14px 0 0; padding:18px 16px 24px; }
+  #sheet .btns { display:flex; gap:10px; margin-top:16px; }
+  #sheet .btns button { flex:1; }
+  #cancelBtn { background:#43525f; }
+  .hide { display:none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Karaoke Requests</h1>
+  <div id="status" class="off">Connecting…</div>
+</header>
+<main>
+  <section id="nameBox">
+    <label for="nameIn">Your singer name (what the host calls out)</label>
+    <div class="row">
+      <input id="nameIn" maxlength="30" autocomplete="nickname" autocapitalize="characters">
+      <button id="nameOk">OK</button>
+    </div>
+  </section>
+
+  <section id="songBox" class="hide">
+    <div class="row" style="justify-content:space-between">
+      <div>Singing as <span id="nameShow"></span></div>
+      <button id="changeName">change</button>
+    </div>
+    <label for="findIn">Find a song (title or artist)</label>
+    <input id="findIn" type="search" enterkeyhint="search" autocomplete="off">
+    <div id="msg"></div>
+    <ul id="results"></ul>
+  </section>
+
+  <h2>Up next</h2>
+  <ul id="lineup"><li class="hint">Waiting for the host…</li></ul>
+</main>
+
+<div id="sheet">
+  <div class="box">
+    <div class="t" id="sheetTrack"></div>
+    <div class="a" id="sheetArtist"></div>
+    <div class="btns">
+      <button id="cancelBtn">Cancel</button>
+      <button id="sendBtn">Request it</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/mqtt@5.16.1/dist/mqtt.min.js"></script>
+<script>
+(function () {
+  // Same table as phone_link.py on the host
+  var BROKERS = {
+    emqx:   "wss://broker.emqx.io:8084/mqtt",
+    hivemq: "wss://broker.hivemq.com:8884/mqtt"
+  };
+  var qs = new URLSearchParams(location.search);
+  var venue = (qs.get("v") || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  var url = qs.get("broker") || BROKERS[(qs.get("b") || "emqx").toLowerCase()] || BROKERS.emqx;
+  var base = "protation/" + venue + "/";
+  var $ = function (id) { return document.getElementById(id); };
+
+  function store(k, v) { try { if (v === undefined) return localStorage.getItem(k);
+                               localStorage.setItem(k, v); } catch (e) { return null; } }
+  var cid = store("protation_cid");
+  if (!cid || !/^[A-Za-z0-9_-]{6,40}$/.test(cid)) {
+    cid = "p" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+    store("protation_cid", cid);
+  }
+  var name = store("protation_name") || "";
+  var hostOnline = false, connected = false, pending = null, picked = null;
+  var lastQuery = "", findTimer = null, lineup = [];
+
+  function setStatus() {
+    var s = $("status");
+    if (!venue) { s.textContent = "This link is missing the venue code. Scan the QR code again."; s.className = "off"; return; }
+    if (!connected) { s.textContent = "Connecting…"; s.className = "off"; }
+    else if (!hostOnline) { s.textContent = "The host is not taking requests right now"; s.className = "off"; }
+    else { s.textContent = "Connected to the host"; s.className = "on"; }
+  }
+
+  function showName() {
+    var has = !!name;
+    $("nameBox").classList.toggle("hide", has);
+    $("songBox").classList.toggle("hide", !has);
+    $("nameShow").textContent = name;
+    $("nameIn").value = name;
+    drawLineup();
+  }
+  function cleanName(s) { return s.toUpperCase().replace(/[\\\/:*?"<>|]/g, "").replace(/\s+/g, " ").trim().slice(0, 30); }
+  $("nameOk").onclick = function () {
+    var n = cleanName($("nameIn").value);
+    if (!n || n === "REQUEST") { $("nameIn").focus(); return; }
+    name = n; store("protation_name", n); showName(); $("findIn").focus();
+  };
+  $("nameIn").addEventListener("keydown", function (e) { if (e.key === "Enter") $("nameOk").click(); });
+  $("changeName").onclick = function () { name = ""; showName(); $("nameIn").focus(); };
+
+  function say(text, kind) { var m = $("msg"); m.textContent = text; m.className = kind || ""; }
+
+  if (!venue) { setStatus(); return; }
+  var client = mqtt.connect(url, {
+    clientId: "protation-" + cid, clean: true, keepalive: 30,
+    reconnectPeriod: 3000, connectTimeout: 15000
+  });
+  client.on("connect", function () {
+    connected = true; setStatus();
+    client.subscribe([base + "to/" + cid, base + "lineup", base + "status"], { qos: 1 });
+    if (pending) send(pending);
+  });
+  client.on("close", function () { connected = false; setStatus(); });
+  client.on("offline", function () { connected = false; setStatus(); });
+  client.on("message", function (topic, payload) {
+    var text = payload.toString();
+    if (topic === base + "status") { hostOnline = (text === "online"); setStatus(); return; }
+    var data; try { data = JSON.parse(text); } catch (e) { return; }
+    if (topic === base + "lineup") { lineup = data.next || []; drawLineup(); return; }
+    if (data.type === "found" && data.q === lastQuery) drawResults(data.songs || []);
+    if (data.type === "ack" && pending && data.id === pending.id) {
+      pending = null;
+      say(data.msg || (data.ok ? "Added." : "Not added."), data.ok ? "ok" : "bad");
+    }
+  });
+
+  $("findIn").addEventListener("input", function () {
+    clearTimeout(findTimer);
+    findTimer = setTimeout(find, 450);
+  });
+  $("findIn").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { clearTimeout(findTimer); find(); this.blur(); }
+  });
+  function find() {
+    var q = $("findIn").value.trim();
+    if (q.length < 2) { $("results").innerHTML = ""; return; }
+    if (q === lastQuery) return;
+    lastQuery = q;
+    if (!hostOnline) { say("The host is not taking requests right now.", "bad"); return; }
+    client.publish(base + "find", JSON.stringify({ cid: cid, q: q }), { qos: 0 });
+  }
+  function drawResults(songs) {
+    var ul = $("results"); ul.innerHTML = "";
+    if (!songs.length) { ul.innerHTML = '<li class="hint">No songs found. Try fewer words.</li>'; return; }
+    songs.forEach(function (s) {
+      var li = document.createElement("li");
+      li.innerHTML = '<div class="t"></div><div class="a"></div>';
+      li.firstChild.textContent = s[0]; li.lastChild.textContent = s[1];
+      li.onclick = function () { pick(s); };
+      ul.appendChild(li);
+    });
+  }
+  function pick(s) {
+    picked = s;
+    $("sheetTrack").textContent = s[0];
+    $("sheetArtist").textContent = s[1];
+    $("sheet").style.display = "flex";
+  }
+  $("cancelBtn").onclick = function () { $("sheet").style.display = "none"; };
+  $("sendBtn").onclick = function () {
+    $("sheet").style.display = "none";
+    if (!picked || !name) return;
+    send({ cid: cid, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+           singer: name, track: picked[0], artist: picked[1] });
+  };
+  function send(req) {
+    pending = req;
+    say("Sending " + req.track + "…", "wait");
+    if (connected) client.publish(base + "req", JSON.stringify(req), { qos: 1 });
+    var id = req.id;
+    setTimeout(function () {            // nothing heard: ask again once
+      if (pending && pending.id === id && connected)
+        client.publish(base + "req", JSON.stringify(req), { qos: 1 });
+    }, 8000);
+    setTimeout(function () {
+      if (pending && pending.id === id) {
+        pending = null;
+        say("The host did not answer. Check the list below before you try again.", "bad");
+      }
+    }, 20000);
+  }
+  function drawLineup() {
+    var ul = $("lineup"); ul.innerHTML = "";
+    if (!lineup.length) { ul.innerHTML = '<li class="hint">Nobody is waiting yet.</li>'; return; }
+    lineup.forEach(function (e, i) {
+      var li = document.createElement("li");
+      if (name && e[0].toUpperCase() === name) li.className = "mine";
+      li.innerHTML = '<span class="n"></span><span></span>';
+      li.firstChild.textContent = (i + 1) + ".";
+      li.lastChild.textContent = e[0] + " – " + e[1];
+      ul.appendChild(li);
+    });
+  }
+  showName(); setStatus();
+})();
+</script>
+</body>
+</html>
