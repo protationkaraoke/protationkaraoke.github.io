@@ -50,6 +50,12 @@
   #sheet .btns button { flex:1; }
   #cancelBtn { background:#43525f; }
   .hide { display:none !important; }
+  #otherLink { background:transparent; color:#8fc7ff; padding:10px 0; font-size:16px;
+               text-decoration:underline; }
+  #otherBox { margin-top:6px; padding:12px; background:var(--card); border-radius:10px; }
+  #otherBox .btns { display:flex; gap:10px; margin-top:12px; }
+  #otherBox .btns button { flex:1; }
+  #otherCancel { background:#43525f; }
 </style>
 </head>
 <body>
@@ -75,6 +81,18 @@
     <input id="findIn" type="search" enterkeyhint="search" autocomplete="off">
     <div id="msg"></div>
     <ul id="results"></ul>
+    <button id="otherLink">Can't find your song? Request it anyway</button>
+    <div id="otherBox" class="hide">
+      <div class="hint">Type the song. The host will look for it.</div>
+      <label for="otherTrack">Song title</label>
+      <input id="otherTrack" maxlength="100" autocomplete="off">
+      <label for="otherArtist">Artist</label>
+      <input id="otherArtist" maxlength="100" autocomplete="off">
+      <div class="btns">
+        <button id="otherCancel">Cancel</button>
+        <button id="otherSend">Request it</button>
+      </div>
+    </div>
   </section>
 
   <h2>Up next</h2>
@@ -185,7 +203,10 @@
   }
   function drawResults(songs) {
     var ul = $("results"); ul.innerHTML = "";
-    if (!songs.length) { ul.innerHTML = '<li class="hint">No songs found. Try fewer words.</li>'; return; }
+    if (!songs.length) {
+      ul.innerHTML = '<li class="hint">Not in the song book. Try fewer words, or request it anyway below.</li>';
+      return;
+    }
     songs.forEach(function (s) {
       var li = document.createElement("li");
       li.innerHTML = '<div class="t"></div><div class="a"></div>';
@@ -206,6 +227,27 @@
     if (!picked || !name) return;
     send({ cid: cid, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
            singer: name, track: picked[0], artist: picked[1] });
+  };
+  $("otherLink").onclick = function () {
+    $("otherBox").classList.remove("hide");
+    $("otherLink").classList.add("hide");
+    if (!$("otherTrack").value) $("otherTrack").value = $("findIn").value.trim();
+    $("otherTrack").focus();
+  };
+  function closeOther() {
+    $("otherBox").classList.add("hide");
+    $("otherLink").classList.remove("hide");
+  }
+  $("otherCancel").onclick = closeOther;
+  $("otherSend").onclick = function () {
+    var t = $("otherTrack").value.trim(), a = $("otherArtist").value.trim();
+    if (!t) { $("otherTrack").focus(); return; }
+    if (!name) return;
+    if (!hostOnline) { say("The host is not taking requests right now.", "bad"); return; }
+    closeOther();
+    $("otherTrack").value = ""; $("otherArtist").value = "";
+    send({ cid: cid, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+           singer: name, track: t, artist: a, special: true });
   };
   function send(req) {
     pending = req;
