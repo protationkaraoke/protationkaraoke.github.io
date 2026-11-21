@@ -133,7 +133,7 @@
   }
   var name = store("protation_name") || "";
   var hostOnline = false, connected = false, pending = null, picked = null;
-  var lastQuery = "", findTimer = null, lineup = [];
+  var lastQuery = "", findTimer = null, findWait = null, lineup = [];
 
   function setStatus() {
     var s = $("status");
@@ -179,7 +179,11 @@
     if (topic === base + "status") { hostOnline = (text === "online"); setStatus(); return; }
     var data; try { data = JSON.parse(text); } catch (e) { return; }
     if (topic === base + "lineup") { lineup = data.next || []; drawLineup(); return; }
-    if (data.type === "found" && data.q === lastQuery) drawResults(data.songs || []);
+    if (data.type === "found" && data.q === lastQuery) {
+      clearTimeout(findWait);
+      if (data.note) { $("results").innerHTML = ""; say(data.note, "bad"); lastQuery = ""; }
+      else drawResults(data.songs || []);
+    }
     if (data.type === "ack" && pending && data.id === pending.id) {
       pending = null;
       say(data.msg || (data.ok ? "Added." : "Not added."), data.ok ? "ok" : "bad");
@@ -198,8 +202,16 @@
     if (q.length < 2) { $("results").innerHTML = ""; return; }
     if (q === lastQuery) return;
     lastQuery = q;
-    if (!hostOnline) { say("The host is not taking requests right now.", "bad"); return; }
-    client.publish(base + "find", JSON.stringify({ cid: cid, q: q }), { qos: 0 });
+    if (!hostOnline) { say("The host is not taking requests right now.", "bad"); lastQuery = ""; return; }
+    $("results").innerHTML = '<li class="hint">Searching…</li>';
+    client.publish(base + "find", JSON.stringify({ cid: cid, q: q }), { qos: 1 });
+    clearTimeout(findWait);
+    findWait = setTimeout(function () {       // no answer: say so, and let the same words be sent again
+      if (lastQuery === q) {
+        $("results").innerHTML = '<li class="hint">The host did not answer. Change the words or try again.</li>';
+        lastQuery = "";
+      }
+    }, 7000);
   }
   function drawResults(songs) {
     var ul = $("results"); ul.innerHTML = "";
@@ -246,6 +258,8 @@
     if (!hostOnline) { say("The host is not taking requests right now.", "bad"); return; }
     closeOther();
     $("otherTrack").value = ""; $("otherArtist").value = "";
+    // ready for the next search, even with the same words
+    lastQuery = ""; $("results").innerHTML = "";
     send({ cid: cid, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
            singer: name, track: t, artist: a, special: true });
   };
